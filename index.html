@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Köprü onayı</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    font-family: -apple-system, system-ui, sans-serif;
+    background: var(--tg-theme-bg-color, #fff); color: var(--tg-theme-text-color, #000);
+  }
+  main { text-align: center; padding: 32px 24px; max-width: 420px; }
+  .icon { font-size: 56px; margin-bottom: 12px; }
+  h1 { font-size: 20px; margin: 0 0 8px; }
+  p { margin: 0 0 20px; color: var(--tg-theme-hint-color, #666); line-height: 1.4; }
+  button {
+    font: inherit; padding: 12px 22px; border: 0; border-radius: 10px;
+    background: var(--tg-theme-button-color, #2481cc); color: var(--tg-theme-button-text-color, #fff);
+  }
+  button[hidden] { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <div class="icon" id="icon">🔒</div>
+  <h1 id="title">Hazırlanıyor…</h1>
+  <p id="msg"></p>
+  <button id="retry" hidden>Tekrar dene</button>
+  <button id="close" hidden>Kapat</button>
+</main>
+<script>
+(function () {
+  // Hack & Slash Alpha — Telegram köprüsü Face ID onay sayfası.
+  // Bot, KeyboardButton(web_app) ile bu sayfayı ?a=pair|auth&n=<nonce> parametreleriyle açar.
+  // Sayfa hiçbir sır içermez: anahtar telefonun biyometrik deposunda üretilir ve saklanır,
+  // bota yalnızca sendData ile geri döner; bot anahtarın özetini (hash) tutar.
+  var tg = window.Telegram && window.Telegram.WebApp;
+  var q = new URLSearchParams(location.search);
+  var action = q.get("a") || "auth";
+  var nonce = q.get("n") || "";
+  var $ = function (id) { return document.getElementById(id); };
+
+  function show(icon, title, msg, retry) {
+    $("icon").textContent = icon; $("title").textContent = title; $("msg").textContent = msg || "";
+    $("retry").hidden = !retry; $("close").hidden = false;
+  }
+  function fail(msg, retry) { show("⚠️", "Olmadı", msg, retry); }
+
+  if (!tg) { fail("Bu sayfa yalnızca Telegram içinde çalışır."); return; }
+  tg.ready(); tg.expand();
+  $("close").onclick = function () { tg.close(); };
+  $("retry").onclick = function () { location.reload(); };
+
+  if (!nonce) { fail("Geçersiz bağlantı (nonce yok). Bottan yeni onay iste."); return; }
+  if (!tg.isVersionAtLeast || !tg.isVersionAtLeast("7.2") || !tg.BiometricManager) {
+    fail("Telegram sürümü biyometrik doğrulamayı desteklemiyor. Uygulamayı güncelle; şimdilik /kod ile devam edebilirsin.");
+    return;
+  }
+  var bm = tg.BiometricManager;
+
+  function randomToken() {
+    var b = new Uint8Array(32); crypto.getRandomValues(b);
+    return Array.prototype.map.call(b, function (x) { return ("0" + x.toString(16)).slice(-2); }).join("");
+  }
+  function kind() { return bm.biometricType === "face" ? "Face ID" : bm.biometricType === "finger" ? "parmak izi" : "biyometri"; }
+
+  function withAccess(reason, next) {
+    if (bm.isAccessGranted) { next(); return; }
+    bm.requestAccess({ reason: reason }, function (granted) {
+      if (granted) { next(); }
+      else { fail(kind() + " izni verilmedi. Telegram ayarlarından bu bota biyometri izni ver.", true); }
+    });
+  }
+
+  function pair() {
+    show("🔗", "Eşleştirme", kind() + " ile bu telefon köprüye bağlanacak.");
+    withAccess("Köprü eşleştirme", function () {
+      var token = randomToken();
+      bm.updateBiometricToken(token, function (ok) {
+        if (!ok) { fail("Anahtar kaydedilemedi.", true); return; }
+        tg.sendData("pair:" + nonce + ":" + token);
+      });
+    });
+  }
+
+  function auth() {
+    show("🔒", "Onay", kind() + " ile doğrula.");
+    withAccess("Köprü onayı", function () {
+      if (!bm.isBiometricTokenSaved) { fail("Bu telefon eşleştirilmemiş. Bota /eslestir yaz."); return; }
+      bm.authenticate({ reason: "Köprü onayı" }, function (ok, token) {
+        if (ok && token) { tg.sendData("auth:" + nonce + ":" + token); }
+        else { fail("Doğrulanamadı.", true); }
+      });
+    });
+  }
+
+  bm.init(function () {
+    if (!bm.isBiometricAvailable) { fail("Bu cihazda biyometrik doğrulama yok veya kapalı."); return; }
+    if (action === "pair") { pair(); } else { auth(); }
+  });
+})();
+</script>
+</body>
+</html>
